@@ -196,6 +196,8 @@ int myLed = 13; // Set up pin 13 led for toggling
 int16_t accelCount[3];  // Stores the 16-bit signed accelerometer sensor output
 int16_t gyroCount[3];   // Stores the 16-bit signed gyro sensor output
 int16_t magCount[3];    // Stores the 16-bit signed magnetometer sensor output
+float magOffs[3] = {0, 0, 0};    // Stores the 16-bit signed magnetometer sensor output
+int MAX_OFFS_COUNTS = 100;
 float magCalibration[3] = {0, 0, 0}, magbias[3] = {0, 0, 0};  // Factory mag calibration and mag bias
 float gyroBias[3] = {0, 0, 0}, accelBias[3] = {0, 0, 0};      // Bias corrections for gyro and accelerometer
 int16_t tempCount;      // temperature raw count output
@@ -366,6 +368,34 @@ void initMPU9250()
    delay(100);
 }
 
+float a0 = 0.00024135899874854145;
+float a1 = 0.0004827179974970829;
+float a2 = 0.00024135899874854145;
+float b1 = -1.9555778328194147;
+float b2 = 0.9565432688144089;
+
+float filterX_1[3] = {0, 0, 0};
+float filterY_1[3] = {0, 0, 0};
+
+float filterX_2[3] = {0, 0, 0};
+float filterY_2[3] = {0, 0, 0};
+
+float filterX_3[3] = {0, 0, 0};
+float filterY_3[3] = {0, 0, 0};
+
+float biquad_filter(float current_sample, float *x, float *y)
+{
+  x[2]=x[1];
+  x[1]=x[0];
+  x[0]=current_sample;
+  y[2]=y[1];
+  y[1]=y[0];
+  float filtered_sample = a0*x[0] + a1*x[1] + a2*x[2] - b1*y[1] - b2*y[2];  
+  y[0] = filtered_sample;
+
+  return filtered_sample;
+}
+
 void setup() {
   // put your setup code here, to run once:
   Wire.begin(D1, D2); //D1 - SDA, D2 - SCL
@@ -387,6 +417,41 @@ void setup() {
   Serial.print("X-Axis sensitivity adjustment value "); Serial.println(magCalibration[0], 2);
   Serial.print("Y-Axis sensitivity adjustment value "); Serial.println(magCalibration[1], 2);
   Serial.print("Z-Axis sensitivity adjustment value "); Serial.println(magCalibration[2], 2);  
+
+  //compensate offset
+  int counts = 0;
+  while(counts < MAX_OFFS_COUNTS)
+  {
+    if (readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01) {
+      ++counts;
+      
+      readMagData(magCount);  // Read the x/y/z adc values
+      getMres();
+      magbias[0] = +470.;  // User environmental x-axis correction in milliGauss, should be automatically calculated
+      magbias[1] = +120.;  // User environmental x-axis correction in milliGauss
+      magbias[2] = +125.;  // User environmental x-axis correction in milliGauss
+      
+      // Calculate the magnetometer values in milliGauss
+      // Include factory calibration per data sheet and user environmental corrections
+      mx = (float)magCount[0]*mRes*magCalibration[0] - magbias[0];  // get actual magnetometer value, this depends on scale being set
+      my = (float)magCount[1]*mRes*magCalibration[1] - magbias[1];  
+      mz = (float)magCount[2]*mRes*magCalibration[2] - magbias[2];
+
+     magOffs[0] += mx;
+     magOffs[1] += my;
+     magOffs[2] += mz;
+
+      Serial.print("offs - ");
+      Serial.print( (int)mx ); 
+      Serial.print(","); Serial.print( (int)my ); 
+      Serial.print(","); Serial.println( (int)mz );
+    }
+  }
+
+  magOffs[0] /= MAX_OFFS_COUNTS;
+  magOffs[1] /= MAX_OFFS_COUNTS;
+  magOffs[2] /= MAX_OFFS_COUNTS;
+  
 }
 
 void loop() {
@@ -399,12 +464,16 @@ void loop() {
     
     // Calculate the magnetometer values in milliGauss
     // Include factory calibration per data sheet and user environmental corrections
-    mx = (float)magCount[0]*mRes*magCalibration[0] - magbias[0];  // get actual magnetometer value, this depends on scale being set
-    my = (float)magCount[1]*mRes*magCalibration[1] - magbias[1];  
-    mz = (float)magCount[2]*mRes*magCalibration[2] - magbias[2];  
+    mx = (float)(magCount[0]*mRes*magCalibration[0] - magbias[0]) - magOffs[0];  // get actual magnetometer value, this depends on scale being set
+    my = (float)(magCount[1]*mRes*magCalibration[1] - magbias[1]) - magOffs[1];  
+    mz = (float)(magCount[2]*mRes*magCalibration[2] - magbias[2]) - magOffs[2];  
 
-    Serial.print("mx = "); Serial.print( (int)mx ); 
-    Serial.print(" my = "); Serial.print( (int)my ); 
-    Serial.print(" mz = "); Serial.print( (int)mz ); Serial.println(" mG");
+    mx = biquad_filter(mx, filterX_1, filterY_1);
+    my = biquad_filter(my, filterX_2, filterY_2);
+    mz = biquad_filter(mz, filterX_3, filterY_3);
+
+    Serial.print( (int)mx ); 
+    Serial.print(","); Serial.print( (int)my ); 
+    Serial.print(","); Serial.println( (int)mz );
   }
 }
