@@ -1,5 +1,7 @@
 #include <Wire.h>
-
+extern "C" {
+  #include "user_interface.h"
+}
 // See also MPU-9250 Register Map and Descriptions, Revision 4.0, RM-MPU-9250A-00, Rev. 1.4, 9/9/2013 for registers not listed in 
 // above document; the MPU9250 and MPU9150 are virtually identical but the latter has a different register map
 //
@@ -368,33 +370,70 @@ void initMPU9250()
    delay(100);
 }
 
-float a0 = 0.00024135899874854145;
-float a1 = 0.0004827179974970829;
-float a2 = 0.00024135899874854145;
-float b1 = -1.9555778328194147;
-float b2 = 0.9565432688144089;
+class biquad {
+public:
+  biquad(double a0, double a1, double a2, double b1, double b2)
+  {
+    a[0] = a0;
+    a[1] = a1;
+    a[2] = a2;
+    b[0] = b1;
+    b[1] = b2;
+    x[0] = x[1] = x[2] = 0.0;
+    y[0] = y[1] = y[2] = 0.0;
+  }
 
-float filterX_1[3] = {0, 0, 0};
-float filterY_1[3] = {0, 0, 0};
+  double filter(double in) 
+  {
+    x[2] = x[1];
+    x[1] = x[0];
+    x[0] = in;
+    y[2] = y[1];
+    y[1] = y[0];
+    
+    double filtered_sample = a[0]*x[0] + a[1]*x[1] + a[2]*x[2] - b[0]*y[1] - b[1]*y[2];  
+    y[0] = filtered_sample;
+  
+    return filtered_sample;
+  }
+private:
+  double a[3], b[2];
+  double x[3], y[3];
+};
 
-float filterX_2[3] = {0, 0, 0};
-float filterY_2[3] = {0, 0, 0};
+/*
+a0 = 0.5049992667097521
+a1 = 1.0099985334195043
+a2 = 0.5049992667097521
+b1 = 0.7477865686482109
+b2 = 0.27221049819079773
+ */
+biquad b_lp_70x(0.5049992667097521, 1.0099985334195043, 0.5049992667097521, 0.7477865686482109, 0.27221049819079773);
 
-float filterX_3[3] = {0, 0, 0};
-float filterY_3[3] = {0, 0, 0};
+biquad b_lp_70y(0.5049992667097521, 1.0099985334195043, 0.5049992667097521, 0.7477865686482109, 0.27221049819079773);
 
-float biquad_filter(float current_sample, float *x, float *y)
-{
-  x[2]=x[1];
-  x[1]=x[0];
-  x[0]=current_sample;
-  y[2]=y[1];
-  y[1]=y[0];
-  float filtered_sample = a0*x[0] + a1*x[1] + a2*x[2] - b1*y[1] - b2*y[2];  
-  y[0] = filtered_sample;
+biquad b_lp_70z(0.5049992667097521, 1.0099985334195043, 0.5049992667097521, 0.7477865686482109, 0.27221049819079773);
 
-  return filtered_sample;
-}
+/*
+a0 = 0.5049992667097523
+a1 = -1.0099985334195045
+a2 = 0.5049992667097523
+b1 = -0.7477865686482112
+b2 = 0.27221049819079784
+ */
+biquad b_hp_30x(0.5049992667097523, -1.0099985334195045, 0.5049992667097523, -0.7477865686482112, 0.27221049819079784);
+
+biquad b_hp_30y(0.5049992667097523, -1.0099985334195045, 0.5049992667097523, -0.7477865686482112, 0.27221049819079784);
+
+biquad b_hp_30z(0.5049992667097523, -1.0099985334195045, 0.5049992667097523, -0.7477865686482112, 0.27221049819079784);
+
+os_timer_t myTimer;
+void timerCallback(void *pArg);
+
+void user_init(void) {
+      os_timer_setfn(&myTimer, timerCallback, NULL);
+      os_timer_arm(&myTimer, 5, true);
+} // End of user_init
 
 void setup() {
   // put your setup code here, to run once:
@@ -451,11 +490,13 @@ void setup() {
   magOffs[0] /= MAX_OFFS_COUNTS;
   magOffs[1] /= MAX_OFFS_COUNTS;
   magOffs[2] /= MAX_OFFS_COUNTS;
-  
+
+  user_init();
 }
 
-void loop() {
-  if (readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01) {
+void timerCallback(void *pArg) {
+
+ if (readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01) {
     readMagData(magCount);  // Read the x/y/z adc values
     getMres();
     magbias[0] = +470.;  // User environmental x-axis correction in milliGauss, should be automatically calculated
@@ -468,12 +509,20 @@ void loop() {
     my = (float)(magCount[1]*mRes*magCalibration[1] - magbias[1]) - magOffs[1];  
     mz = (float)(magCount[2]*mRes*magCalibration[2] - magbias[2]) - magOffs[2];  
 
-    mx = biquad_filter(mx, filterX_1, filterY_1);
-    my = biquad_filter(my, filterX_2, filterY_2);
-    mz = biquad_filter(mz, filterX_3, filterY_3);
+    mx = b_hp_30x.filter(mx);
+    my = b_hp_30y.filter(my);
+    mz = b_hp_30z.filter(mz);
+    
+    mx = b_lp_70x.filter(mx);
+    my = b_lp_70y.filter(my);
+    mz = b_lp_70z.filter(mz);
 
     Serial.print( (int)mx ); 
     Serial.print(","); Serial.print( (int)my ); 
     Serial.print(","); Serial.println( (int)mz );
   }
+}
+
+void loop() {
+ 
 }

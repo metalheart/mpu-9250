@@ -1,9 +1,9 @@
 [_setup_]
-port=COM8   
+port=COM3   
 baudrate=115200
 
 width=1000
-height=400
+height=800
 background_color = white
 
 grid_h_origin = 100
@@ -17,8 +17,8 @@ grid_v_color = #EEE
 grid_v_origin_color = transparent
 
 [_default_]
-min=-500
-max=500
+min=-50
+max=50
 
 [Field1]
 color=red
